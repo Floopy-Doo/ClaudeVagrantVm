@@ -51,37 +51,22 @@ Vagrant.configure("2") do |config|
     hv.cpus = 8
   end
 
-  # Network setup in bridge mode
-  config.vm.provision "shell",
-    inline: <<-SHELL
-		# Static IP on the VagrantNatSwitch NAT network (192.168.50.0/24).
-		# The box manages devices with NetworkManager, so render through NM.
-		# dhcp4/dhcp6 are pinned off to override the dhcp4: true that
-		# 01-netcfg.yaml and 50-cloud-init.yaml otherwise merge in.
-		cat > /etc/netplan/99-static.yaml <<'EOF'
-	network:
-	  version: 2
-	  renderer: NetworkManager
-	  ethernets:
-		eth0:
-		  dhcp4: false
-		  dhcp6: false
-		  addresses:
-			- 192.168.50.10/24
-		  routes:
-			- to: default
-			  via: 192.168.50.1
-		  nameservers:
-			addresses:
-			  - 8.8.8.8
-		  networkmanager:
-			passthrough:
-			  ipv6.method: "disabled"
-	EOF
-		chmod 600 /etc/netplan/99-static.yaml
-		netplan apply
-	SHELL
-	
+  # Network setup in bridge mode.
+  # The netplan config lives in netplan/99-static.yaml and is uploaded verbatim,
+  # so no heredoc quoting/indentation can mangle it. The file provisioner runs as
+  # the 'vagrant' user and cannot write to /etc, so it lands in /tmp and the shell
+  # provisioner below installs it with root ownership and 0600.
+  config.vm.provision "file",
+    source: "network-config.yaml",
+    destination: "/tmp/99-static.yaml"
+
+  config.vm.provision "shell", inline: <<~SHELL
+    set -eu
+    install -o root -g root -m 600 /tmp/99-static.yaml /etc/netplan/99-static.yaml
+    rm -f /tmp/99-static.yaml
+    netplan apply
+  SHELL
+
   # Root-level setup
   config.vm.provision "shell",
     inline: <<-SHELL		
