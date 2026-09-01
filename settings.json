@@ -1,0 +1,55 @@
+{
+  "model": "opus",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk hook claude"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/vagrant/.claude/hooks/guard-main-branch.sh",
+            "statusMessage": "Checking branch to keep main clean"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/vagrant/.claude/hooks/guard-ado-token.sh",
+            "statusMessage": "Checking for credential leaks"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/vagrant/.claude/statusline-command.sh"
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "context7@claude-plugins-official": true
+  },
+  "effortLevel": "xhigh",
+  "skipDangerousModePermissionPrompt": true,
+  "tui": "fullscreen",
+  "permissions": {
+    "deny": [
+      "Read(//home/vagrant/.config/azure-devops/**)",
+      "Read(//home/vagrant/.git-credentials)",
+      "Read(//home/vagrant/.netrc)"
+    ]
+  }
+}
