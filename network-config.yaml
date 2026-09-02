@@ -1,7 +1,16 @@
 # Static IP on the VagrantNatSwitch NAT network (192.168.50.0/24).
+# The switch is Internal with no DHCP server, so without this file the guest
+# never gets an IPv4 address at all — Vagrant falls back to the IPv6
+# link-local address to reach it.
+#
 # The box manages devices with NetworkManager, so render through NM.
 # dhcp4/dhcp6 are pinned off to override the dhcp4: true that
 # 01-netcfg.yaml and 50-cloud-init.yaml otherwise merge in.
+#
+# ipv6.method is 'link-local', NOT 'disabled': disabling IPv6 outright removes
+# the fe80:: address that Vagrant uses to reach the box on the very first boot,
+# before this file exists. Keeping link-local costs nothing and preserves that
+# rescue path if Hyper-V guest-IP detection ever fails to report the IPv4.
 network:
   version: 2
   renderer: NetworkManager
@@ -17,6 +26,7 @@ network:
       nameservers:
         addresses:
           - 8.8.8.8
+          - 1.1.1.1
       networkmanager:
         passthrough:
-          ipv6.method: "disabled"
+          ipv6.method: "link-local"
