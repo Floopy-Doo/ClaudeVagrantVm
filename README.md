@@ -14,7 +14,7 @@ the repo contains a claude.md and a settings.json. use your own claude config an
   - vagrant ssh-config > vagrant-ssh
   - append to ~/.ssh/config
   - change config alias to vagrant_vm 
-7. host: ssh vagrant_cm
+7. host: ssh vagrant_vm
 8. guest: clone git repo from real remote ( in folder  /coding)
 9. guest: remove real remote from git repo
 10. host: setup git upstream to vagrant
