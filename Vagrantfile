@@ -98,7 +98,7 @@ Vagrant.configure("2") do |config|
     set -eu
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y docker.io nodejs npm git unzip bash-completion curl
+    apt-get install -y docker.io nodejs npm git unzip bash-completion curl rsync
     usermod -aG docker vagrant
 
     # rtk (Rust Token Killer) — installed system-wide, so it must run as root.
