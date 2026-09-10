@@ -1,9 +1,13 @@
 require "yaml"
 require "fileutils"
+require "open3"
 
 vm_name = "ClaudeVm"
 
 CHOICES_FILE = File.join(File.dirname(__FILE__), ".vagrant", "install-choices.yml")
+
+# Only these commands run provisioners; halt/destroy/ssh/status must not prompt or probe the host.
+PROVISIONING = %w[up provision reload].include?(ARGV[0])
 
 def ask?(question)
   print "#{question} [y/N]: "
@@ -14,15 +18,13 @@ def load_or_ask_choices
   # Already decided once → reuse, never ask again.
   return YAML.load_file(CHOICES_FILE) if File.exist?(CHOICES_FILE)
 
-  # Only the provisioning commands should prompt; halt/destroy/ssh/status must not.
   defaults = {
     "claude" => false,
     "dotnet" => false,
     "codex" => false
   }
 
-  provisioning = %w[up provision reload].include?(ARGV[0])
-  return defaults unless provisioning
+  return defaults unless PROVISIONING
 
   choices = {
     "claude" => ask?("Install claude?"),
@@ -36,7 +38,24 @@ def load_or_ask_choices
   choices
 end
 
+# Host timezone as IANA name (TZ env var overrides). Windows only knows its own
+# zone IDs; mapping them needs .NET 6+, i.e. PowerShell 7 (pwsh), not powershell.exe.
+def host_timezone
+  tz = ENV["TZ"].to_s.strip
+  if tz.empty? && Vagrant::Util::Platform.windows?
+    script = '$o = $null; if ([TimeZoneInfo]::TryConvertWindowsIdToIanaId((Get-TimeZone).Id, [Globalization.RegionInfo]::CurrentRegion.TwoLetterISORegionName, [ref]$o)) { $o }'
+    tz = Open3.capture2("pwsh", "-NoProfile", "-NonInteractive", "-Command", script).first.strip rescue ""
+  elsif tz.empty?
+    tz = File.readlink("/etc/localtime").sub(%r{.*/zoneinfo/}, "") rescue ""
+  end
+  return tz unless tz.empty?
+
+  warn "Host timezone not detected, using Europe/Zurich (set TZ to override)."
+  "Europe/Zurich"
+end
+
 choices = load_or_ask_choices
+timezone = PROVISIONING ? host_timezone : "UTC"
 
 Vagrant.configure("2") do |config|
   config.vm.box = "gusztavvargadr/ubuntu-desktop-2404-lts"
@@ -94,8 +113,10 @@ Vagrant.configure("2") do |config|
   SHELL
 
   # Root-level setup
-  config.vm.provision "shell", inline: <<~SHELL
+  config.vm.provision "shell", env: { "TIMEZONE" => timezone }, inline: <<~SHELL
     set -eu
+    timedatectl set-timezone "$TIMEZONE"
+
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y docker.io nodejs npm git unzip bash-completion curl rsync

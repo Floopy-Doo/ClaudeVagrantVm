@@ -10,6 +10,7 @@ the repo contains a claude.md and a settings.json. use your own claude config an
 3. Host: Powershell: `New-NetIPAddress -IPAddress 192.168.50.1 -PrefixLength 24 -InterfaceAlias "vEthernet (VagrantNatSwitch)"`
 4. Host: Powershell: `New-NetNat -Name "VagrantNatSwitch" -InternalIPInterfaceAddressPrefix 192.168.50.0/24`
 5. host: vagrant up
+   - the guest timezone is set to the host's timezone (needs PowerShell 7 `pwsh` on the host). Override with `$env:TZ="Europe/Helsinki"; vagrant up`; re-apply after a change with `vagrant provision`
 6. host: configure ssh alias for vm
   - vagrant ssh-config > vagrant-ssh
   - append to ~/.ssh/config
