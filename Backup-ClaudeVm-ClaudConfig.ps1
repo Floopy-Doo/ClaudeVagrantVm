@@ -1,12 +1,19 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Backs up ~/.claude from the Vagrant guest onto a rolling git branch (own worktree).
+    Backs up ~/.claude from the Vagrant guest onto a rolling git branch.
     Run on the host from inside the Vagrantfile repo. Commits locally, never pushes.
+.DESCRIPTION
+    The VM must already be running and reachable through the SSH config alias 'vagrant_vm'
+    (see README). The script does not start the VM; it fails if the connection is refused.
+    Each run creates a temporary git worktree for the backup branch (created from 'main' on
+    first use, rebased onto current 'main' afterwards; a rebase that does not complete aborts
+    the run), copies the staged backup into it, commits, and removes the worktree again.
 .NOTES
-    Needs rsync in the guest and OpenSSH scp on the host. Excludes are applied on the guest.
-    Env overrides: CLAUDE_BACKUP_BRANCH (claude-vm-backup), CLAUDE_BACKUP_MACHINE (''),
-    CLAUDE_BACKUP_GUEST_HOME (/home/vagrant), CLAUDE_BACKUP_GUEST_DIR (.claude)
+    Needs rsync in the guest and OpenSSH ssh/scp on the host. Excludes are applied on the guest.
+    Env overrides: CLAUDE_BACKUP_BRANCH (claude-vm-backup), CLAUDE_BACKUP_BASE (main),
+    CLAUDE_BACKUP_SSH_HOST (vagrant_vm), CLAUDE_BACKUP_GUEST_HOME (/home/vagrant),
+    CLAUDE_BACKUP_GUEST_DIR (.claude)
 #>
 [CmdletBinding()]
 param()
@@ -19,65 +26,79 @@ function Invoke-Native([string]$FilePath, [string[]]$ArgumentList, [int[]]$OkExi
     if ($LASTEXITCODE -notin $OkExit) { throw "$FilePath $ArgumentList failed ($LASTEXITCODE)" }
 }
 
-$Branch     = $env:CLAUDE_BACKUP_BRANCH     ?? 'claude-vm-backup'
-$GuestHome  = $env:CLAUDE_BACKUP_GUEST_HOME ?? '/home/vagrant'
-$GuestDir   = $env:CLAUDE_BACKUP_GUEST_DIR  ?? '.claude'
-$MachineArg = @($env:CLAUDE_BACKUP_MACHINE | Where-Object { $_ })
-$Stage      = '/tmp/claude-backup-stage'
-$Excludes   = '.credentials.json', '*.jsonl', '.git', 'shell-snapshots', 'ide', 'debug',
-              'paste-cache', 'file-history', 'statsig', 'telemetry', 'todos', 'plugins'
+$Branch    = $env:CLAUDE_BACKUP_BRANCH     ?? 'claude-vm-backup'
+$Base      = $env:CLAUDE_BACKUP_BASE       ?? 'main'
+$SshHost   = $env:CLAUDE_BACKUP_SSH_HOST   ?? 'vagrant_vm'
+$GuestHome = $env:CLAUDE_BACKUP_GUEST_HOME ?? '/home/vagrant'
+$GuestDir  = $env:CLAUDE_BACKUP_GUEST_DIR  ?? '.claude'
+$Stage     = '/tmp/claude-backup-stage'
+$Excludes  = '.credentials.json', '*.jsonl', '.git', 'shell-snapshots', 'ide', 'debug',
+             'paste-cache', 'file-history', 'statsig', 'telemetry', 'todos', 'plugins'
+# BatchMode: never prompt for passwords/host keys; fail instead of hanging.
+$SshOpts   = '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15'
 
 $RepoRoot = & git rev-parse --show-toplevel 2>$null
 if ($LASTEXITCODE -ne 0) { throw 'not inside a git repository' }
 $RepoRoot = Convert-Path $RepoRoot
 if (-not (Test-Path "$RepoRoot/Vagrantfile")) { throw "no Vagrantfile in $RepoRoot" }
-$WorktreeDir = "$RepoRoot-claude-backup-wt"
+# Short name: keeps backed-up paths as far under Windows' path limit as possible.
+$WorktreeDir = Join-Path ([IO.Path]::GetTempPath()) "cbk-$((New-Guid).ToString('N').Substring(0, 8))"
 
 Push-Location $RepoRoot
 try {
-    if (-not ((& vagrant --machine-readable status @MachineArg 2>$null) -match ',state,running$')) {
-        Write-Host '==> Starting VM'
-        Invoke-Native vagrant (@('up') + $MachineArg)
-    }
+    Write-Host "==> Staging $GuestDir on guest via ssh '$SshHost'"
+    $exclArgs = ($Excludes | ForEach-Object { "--exclude='$_'" }) -join ' '
+    $stageCmd = "set -eu; command -v rsync >/dev/null || { echo 'rsync missing in guest' >&2; exit 3; }; " +
+                "rm -rf '$Stage' && mkdir -p '$Stage' && rsync -aL $exclArgs '$GuestHome/$GuestDir/' '$Stage/$GuestDir/'"
+    # rsync exit 24 = files vanished during transfer, expected while Claude Code is running
+    Invoke-Native ssh ($SshOpts + @($SshHost, $stageCmd)) -OkExit 0, 24
 
-    $SshCfg = Join-Path ([IO.Path]::GetTempPath()) "claude-vm-ssh-$(New-Guid).cfg"
-    try {
-        Write-Host "==> Staging $GuestDir on guest"
-        $exclArgs = ($Excludes | ForEach-Object { "--exclude='$_'" }) -join ' '
-        $stageCmd = "set -eu; command -v rsync >/dev/null || { echo 'rsync missing in guest' >&2; exit 3; }; " +
-                    "rm -rf '$Stage' && mkdir -p '$Stage' && rsync -aL $exclArgs '$GuestHome/$GuestDir/' '$Stage/$GuestDir/'"
-        # rsync exit 24 = files vanished during transfer, expected while Claude Code is running
-        Invoke-Native vagrant (@('ssh') + $MachineArg + @('-c', $stageCmd)) -OkExit 0, 24
+    & git worktree prune
+    & git show-ref --verify --quiet "refs/heads/$Base"
+    if ($LASTEXITCODE -ne 0) { throw "base branch '$Base' does not exist" }
+    & git show-ref --verify --quiet "refs/heads/$Branch"
+    $branchExists = $LASTEXITCODE -eq 0
+    # longpaths: Claude project dirs nest deep enough to exceed Windows' 260-char limit; the
+    # checkout in 'worktree add' needs it too, or long files are silently missing afterwards.
+    $gitCfg = '-c', 'core.autocrlf=false', '-c', 'core.longpaths=true'
+    $git    = @('-C', $WorktreeDir) + $gitCfg
 
-        & vagrant ssh-config @MachineArg | Set-Content $SshCfg
-        if ($LASTEXITCODE -ne 0) { throw "vagrant ssh-config failed ($LASTEXITCODE)" }
-        $sshHost = (Select-String -Path $SshCfg -Pattern '^Host\s+(\S+)' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $addArgs = if ($branchExists) { $WorktreeDir, $Branch } else { '-b', $Branch, $WorktreeDir, $Base }
+    Write-Host "==> Creating temporary worktree for '$Branch'"
+    Invoke-Native git ($gitCfg + @('worktree', 'add', '-q') + $addArgs)
 
-        & git worktree prune
-        if (-not (Test-Path "$WorktreeDir/.git")) {
-            Write-Host "==> Creating worktree '$Branch' at $WorktreeDir"
-            & git show-ref --verify --quiet "refs/heads/$Branch"
-            $addArgs = if ($LASTEXITCODE -eq 0) { $WorktreeDir, $Branch } else { '--orphan', '-b', $Branch, $WorktreeDir }
-            Invoke-Native git (@('worktree', 'add') + $addArgs)
+    if ($branchExists) {
+        Write-Host "==> Rebasing '$Branch' onto '$Base'"
+        # autoStash off: a dirty fresh worktree signals a broken checkout and must fail, not be hidden.
+        & git @git -c rebase.autoStash=false rebase -q $Base
+        if ($LASTEXITCODE -ne 0) {
+            & git @git rebase --abort 2>$null | Out-Null
+            throw "rebase of '$Branch' onto '$Base' did not complete; resolve manually"
         }
-
-        Write-Host '==> Copying to worktree'
-        Get-ChildItem $WorktreeDir -Force | Where-Object Name -ne '.git' | Remove-Item -Recurse -Force
-        Invoke-Native scp @('-q', '-r', '-F', $SshCfg, "${sshHost}:$Stage/$GuestDir", (Resolve-Path -Relative $WorktreeDir))
-        if (-not (Get-ChildItem "$WorktreeDir/$GuestDir" -Force)) { throw 'copied directory is empty' }
-
-        $git = '-C', $WorktreeDir, '-c', 'core.autocrlf=false'
-        Invoke-Native git ($git + @('add', '-A', '-f'))
-        & git @git diff --cached --quiet
-        if ($LASTEXITCODE -eq 0) { Write-Host '==> No changes, nothing to commit'; return }
-
-        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-        Invoke-Native git ($git + @('commit', '-q', '-m', "Backup $GuestDir from VM @ $stamp"))
-        Write-Host "==> Committed to '$Branch' (local only)"
-    } finally {
-        Remove-Item $SshCfg -Force -ErrorAction SilentlyContinue
-        & vagrant ssh @MachineArg -c "rm -rf '$Stage'" 2>$null | Out-Null
     }
+
+    # Drop the previous snapshot from index + worktree so deletions on the guest are reflected.
+    Invoke-Native git ($git + @('rm', '-r', '-q', '-f', '--ignore-unmatch', '--', $GuestDir))
+
+    Write-Host '==> Copying to worktree'
+    # scp treats 'D:/...' as host:path, so copy into '.' from inside the worktree.
+    Push-Location $WorktreeDir
+    try { Invoke-Native scp ($SshOpts + @('-q', '-r', "${SshHost}:$Stage/$GuestDir", '.')) }
+    finally { Pop-Location }
+    if (-not (Get-ChildItem "$WorktreeDir/$GuestDir" -Force)) { throw 'copied directory is empty' }
+
+    Invoke-Native git ($git + @('add', '-A', '-f', '--', $GuestDir))
+    & git @git diff --cached --quiet
+    if ($LASTEXITCODE -eq 0) { Write-Host '==> No changes, nothing to commit'; return }
+
+    $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    Invoke-Native git ($git + @('commit', '-q', '-m', "Backup $GuestDir from VM @ $stamp"))
+    Write-Host "==> Committed to '$Branch' (local only)"
 } finally {
+    if (Test-Path $WorktreeDir) {
+        & git worktree remove --force $WorktreeDir 2>$null | Out-Null
+        Remove-Item $WorktreeDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    & ssh @SshOpts $SshHost "rm -rf '$Stage'" 2>$null | Out-Null
     Pop-Location
 }
