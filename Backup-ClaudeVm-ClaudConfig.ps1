@@ -25,7 +25,7 @@ $GuestDir   = $env:CLAUDE_BACKUP_GUEST_DIR  ?? '.claude'
 $MachineArg = @($env:CLAUDE_BACKUP_MACHINE | Where-Object { $_ })
 $Stage      = '/tmp/claude-backup-stage'
 $Excludes   = '.credentials.json', '*.jsonl', '.git', 'shell-snapshots', 'ide', 'debug',
-              'paste-cache', 'file-history', 'statsig', 'telemetry', 'todos'
+              'paste-cache', 'file-history', 'statsig', 'telemetry', 'todos', 'plugins'
 
 $RepoRoot = & git rev-parse --show-toplevel 2>$null
 if ($LASTEXITCODE -ne 0) { throw 'not inside a git repository' }
