@@ -20,3 +20,41 @@ the repo contains a claude.md and a settings.json. use your own claude config an
 9. guest: remove real remote from git repo
 10. host: setup git upstream to vagrant
     - in repo: git remote add vagrant_claude vagrant_claude:/home/vagrant/coding/repo
+
+### Start / stop / connect
+
+`Start-ClaudeVm.ps1` and `Stop-ClaudeVm.ps1` wrap `vagrant up` / `vagrant halt` and point
+Vagrant at this repo themselves (`VAGRANT_CWD`), so they work from any directory.
+Both need an **elevated** PowerShell 7 session, or a user in *Hyper-V Administrators* (see the
+tip below) — the Hyper-V provider does.
+`Connect-ClaudeVm.ps1` just sshes to the `vagrant_vm` alias and needs no elevation.
+
+Add to your PowerShell profile (`notepad $PROFILE`):
+
+```powershell
+Set-Alias Vagrant-ClaudeVm-Up   D:\Dev\ClaudeVM\Start-ClaudeVm.ps1
+Set-Alias Vagrant-ClaudeVm-Down D:\Dev\ClaudeVM\Stop-ClaudeVm.ps1
+Set-Alias Vagrant-ClaudeVm-SSH  D:\Dev\ClaudeVM\Connect-ClaudeVm.ps1
+```
+
+Then:
+
+```powershell
+Vagrant-ClaudeVm-Up                # start, skipping provisioners
+Vagrant-ClaudeVm-Up -WaitForSsh    # start and block until `ssh vagrant_vm` answers
+Vagrant-ClaudeVm-Up -Provision     # start and re-run the provisioners
+Vagrant-ClaudeVm-Down              # graceful shutdown
+Vagrant-ClaudeVm-Down -Force       # power off
+Vagrant-ClaudeVm-SSH               # interactive shell on the guest
+Vagrant-ClaudeVm-SSH uptime        # run a single command on the guest
+```
+
+> **Tip — skip the elevated shell.** Members of the local *Hyper-V Administrators* group may
+> manage VMs without elevation. Run once in an elevated PowerShell, then sign out and back in
+> (group membership is only picked up at logon):
+>
+> ```powershell
+> Add-LocalGroupMember -Group 'Hyper-V Administrators' -Member "$env:USERDOMAIN\$env:USERNAME"
+> ```
+>
+> Afterwards `Vagrant-ClaudeVm-Up` / `-Down` work from a normal shell.
