@@ -6,11 +6,13 @@ linked git worktree.
 
     .\Push-VagrantBranch.ps1              # current branch
     .\Push-VagrantBranch.ps1 feature/x    # named branch
+    .\Push-VagrantBranch.ps1 -Main        # fetch origin/main and push that (no local checkout needed)
 
-Unlike `Jms-Push-Vagrant` (which only refreshes main via a fixed `temp` parking
-branch), this detaches whichever worktree — main or linked — currently holds the
-branch, force-pushes, then re-checks the branch out there, clobbering the guest
-working tree.
+It detaches whichever worktree — main or linked — currently holds the target
+branch on the guest, force-pushes, then re-checks the branch out there,
+clobbering the guest working tree. `-Main` replaces `Jms-Push-Vagrant`: same
+"refresh main straight from the real remote" behaviour, but without the fixed
+`temp` parking branch, so it also works when main sits in a linked worktree.
 
 Configuration mirrors the bash `git push-claude` contract:
     git config claude.remote    git remote / ssh host   (default: vagrant_vm)
@@ -21,6 +23,11 @@ Run from inside the local clone you want to push from.
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$Branch,
+    # Push the upstream's main straight through: fetch it first, then push the
+    # fetched remote-tracking ref instead of any local branch.
+    [switch]$Main,
+    [string]$Upstream = 'origin',
+    [string]$MainBranch = 'main',
     [string]$Remote,
     [string]$Dir,
     [string]$SshHost
@@ -53,9 +60,17 @@ function Invoke-RemoteBash([string]$TargetHost, [string]$Script, [string[]]$Argu
     ($output -join "`n").TrimEnd("`n")
 }
 
-if (-not $Branch) {
-    $Branch = (& git symbolic-ref --quiet --short HEAD)
-    if (-not $Branch) { throw 'detached HEAD, pass a branch name' }
+if ($Main) {
+    if ($Branch) { throw '-Main and an explicit branch name are mutually exclusive' }
+    $Branch = $MainBranch
+    $SourceRef = "$Upstream/$MainBranch"
+}
+else {
+    if (-not $Branch) {
+        $Branch = (& git symbolic-ref --quiet --short HEAD)
+        if (-not $Branch) { throw 'detached HEAD, pass a branch name' }
+    }
+    $SourceRef = $Branch
 }
 
 if (-not $Remote) { $Remote = (& git config --default vagrant_vm claude.remote) }
@@ -72,7 +87,12 @@ if (-not $SshHost) {
     if (-not $SshHost) { $SshHost = $Remote }
 }
 
-Write-Host "==> pushing '$Branch' to $Remote ($SshHost : $Dir)"
+if ($Main) {
+    Write-Host "==> fetching $MainBranch from $Upstream"
+    Invoke-Native git @('fetch', $Upstream, $MainBranch)
+}
+
+Write-Host "==> pushing '$SourceRef' to $Remote as '$Branch' ($SshHost : $Dir)"
 
 # 1. Find the worktree (main or linked) holding the branch on the guest and detach it
 #    so the ref can be force-updated. Prints the worktree path, empty if none.
@@ -101,7 +121,7 @@ git switch --force "$2"
 
 try {
     # 2. Push the branch as-is — nothing has it checked out now.
-    Invoke-Native git @('push', '--force', $Remote, "${Branch}:${Branch}")
+    Invoke-Native git @('push', '--force', $Remote, "${SourceRef}:refs/heads/${Branch}")
 }
 finally {
     # 3. Re-checkout the branch in that same worktree, clobbering its working tree.
